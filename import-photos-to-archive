@@ -1,0 +1,53 @@
+#!/usr/bin/env ruby
+
+require 'bundler/inline'
+
+gemfile do
+  source 'https://rubygems.org'
+  gem 'exif'
+  gem 'exiftool'
+end
+
+$src_dir = ARGV[0]
+$dst_dir = ARGV[1]
+
+def extract_year_month(date)
+  if date.is_a?(String)
+    date, _ = date.split(' ')
+    year, month, _ = date.split(':')
+    [year, month]
+  elsif date.is_a?(Time)
+    [date.year.to_s, date.month.to_s]
+  else
+    raise "unknown date format: #{date}"
+  end
+end
+
+def move_file(src_file, dst_path)
+  FileUtils.mkdir_p(dst_path) unless File.directory?(dst_path)
+  puts "#{src_file}: moving to #{dst_path}"
+  FileUtils.mv(src_file, dst_path)
+end
+
+def try_exif(src_file)
+  data = Exif::Data.new(File.open(src_file))
+  year, month = extract_year_month(data.date_time_original)
+  dst_path = File.join($dst_dir, year, month)
+  move_file(src_file, dst_path)
+end
+
+def try_exiftool(src_file)
+  data = Exiftool.new(src_file).to_hash
+  year, month = extract_year_month(data[:date_time_original])
+  dst_path = File.join($dst_dir, year, month)
+  move_file(src_file, dst_path)
+rescue StandardError => e
+  puts "#{src_file}: #{e}"
+end
+
+Dir.glob("#{$src_dir}/**/*").reject { |f| File.directory?(f) }.each do |src_file|
+  try_exif(src_file)
+rescue StandardError
+  try_exiftool(src_file)
+end
+

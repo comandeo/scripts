@@ -1,0 +1,255 @@
+#!/usr/bin/env ruby
+
+require 'bundler/inline'
+
+gemfile do
+  source 'https://rubygems.org'
+  gem 'nokogiri'
+end
+
+class Converter
+  def convert(input_file, output_file)
+    @output_file = File.open(output_file, "w")
+    File.open(input_file) do |f|
+      @xml = Nokogiri::XML(f)
+      @notes = @xml.css('body[name="notes"]')
+      write_preamble
+      write_opening
+      write_images
+      write_document
+      write_close
+    end
+  end
+
+  private
+
+  def write_preamble
+    [
+      '\documentclass[12pt]{book}',
+      '\usepackage[a5paper, top=2cm, bottom=2cm, outer=2cm]{geometry}',
+      '\usepackage{fontspec}',
+      '\usepackage[english,russian]{babel}',
+      '\usepackage{graphicx}',
+      '\usepackage{microtype}',
+      '\usepackage{epigraph}',
+      '\usepackage{indentfirst}',
+      '\usepackage[center]{titlesec}',
+      '\usepackage{ebgaramond}',
+      '\usepackage{tikz}',
+      '\usepackage{pgfornament}',
+    ].each do |line|
+      @output_file.puts(line)
+    end
+  end
+
+  def write_opening
+    title = normalize_text(@xml.css("book-title").text)
+    author = [@xml.css("author > first-name").text, @xml.css("author > last-name").text].join(" ")
+    [
+      "\\begin{document}",
+      "\\thispagestyle{empty}",
+      "\\mbox{}",
+      "\\begin{tikzpicture}[remember picture, overlay]",
+      "\\node[anchor=south, yshift=2cm] at (current page.south){",
+      "\\pgfornament[width=4cm]{94}",
+      "};",
+      "\\end{tikzpicture}",
+      "\\newpage",
+      "\\thispagestyle{empty}",
+      "\\mbox{}",
+      "\\begin{titlepage}",
+      "\\centering",
+      "\\vspace*{4cm}",
+      "{\\Huge #{title} \\par}",
+      "\\vspace{1cm}",
+      "\\pgfornament[width=\\textwidth]{88}\\par",
+      "\\vspace*{1cm}",
+      "{\\Large #{author} \\par}",
+      "\\end{titlepage}",
+      "\\pagenumbering{arabic}",
+    ].each do |line|
+      @output_file.puts(line)
+    end
+  end
+
+  def write_images
+    @images = {}
+    @xml.search("binary").each do |binary|
+      image = image_name(binary["id"])
+      puts "Writing #{image}"
+      File.open("#{image}.64", "w") do |f|
+        f.print(binary.content)
+      end
+      system "base64 -d #{image}.64 > #{image}"
+    end
+  end
+
+  def write_document
+    @xml.css("body").search('section').each do |section|
+      title = section.search('title').first&.search('p')&.first&.content
+      if title
+        @output_file.puts("\\addcontentsline{toc}{section}{#{normalize_text(title)}}")
+        @output_file.puts("\\section*{#{normalize_text(title)}}") if title
+      end
+      section.children.each do |node|
+        case node.name
+        when 'p'
+          wite_p(node)
+        when 'cite'
+          write_cite(node)
+        when 'poem'
+          wtite_poem(node)
+        when 'image'
+          write_image(node)
+        when 'epigraph'
+          write_epigraph(node)
+        when 'subtitle'
+          @output_file.puts("\\subsection*{#{normalize_text(node.content)}}")
+        end
+      end
+    end
+  end
+
+  def write_cite(cite_node)
+    @output_file.puts('\begin{quote}')
+    cite_node.search('p').each do |p|
+      wite_p(p)
+    end
+    @output_file.puts('\end{quote}')
+  end
+
+  def wite_p(p_node)
+    p_node.children.each do |node|
+      case node.name
+      when 'text'
+        @output_file.print(normalize_text(node.content))
+      when 'a'
+        write_footnote(node)
+      when 'emphasis'
+        write_emphasis(node)
+      when 'strong'
+        write_strong(node)
+      when 'image'
+        write_image(node)
+      end
+    end
+    @output_file.puts
+    @output_file.puts
+  end
+
+  def write_image(image_node)
+    image = image_name(image_node['l:href'])
+    @output_file.puts("\\includegraphics[width=\\textwidth]{./#{image}}")
+  end
+
+  def write_footnote(footnote_node)
+    return unless footnote_node['type'] == 'note'
+
+    @output_file.print('\footnote{')
+    href = footnote_node.attributes['href'].value
+    @notes.css("section#{href}").first.children.each do |node|
+      case node.name
+      when 'p'
+        wite_p(node)
+      end
+    end
+    @output_file.print("}")
+  end
+
+  def wtite_poem(poem_node)
+    @output_file.puts('\begin{flushleft}')
+    @output_file.puts('\begin{verse}')
+    if (title = poem_node.search('title').first)
+      @output_file.puts("#{normalize_text(title.content)}\\\\")
+      @output_file.puts('\\')
+    end
+    poem_node.search('stanza').each do |stanza|
+      stanza.search('v').each do |v|
+        @output_file.puts("#{normalize_text(v.content)}\\\\")
+      end
+      @output_file.puts('\\')
+    end
+    @output_file.puts('\end{verse}')
+    @output_file.puts('\end{flushleft}')
+  end
+
+  def write_emphasis(emphasis_node)
+    @output_file.print('\textit{')
+    emphasis_node.children.each do |node|
+      case node.name
+      when 'text'
+        @output_file.print(normalize_text(node.content))
+      when 'a'
+        write_footnote(node)
+      end
+    end
+    @output_file.print('}')
+  end
+
+  def write_strong(strong_node)
+    @output_file.print('\textbf{')
+    strong_node.children.each do |node|
+      case node.name
+      when 'text'
+        @output_file.print(normalize_text(node.content))
+      when 'a'
+        write_footnote(node)
+      end
+    end
+    @output_file.print('}')
+  end
+
+  def write_epigraph(epigraph_node)
+    @output_file.print('\epigraph{')
+    epigraph_node.children.each do |node|
+      case node.name
+      when 'p'
+        @output_file.print(normalize_text(node.content))
+      end
+    end
+    @output_file.print('}')
+    @output_file.print('{')
+    epigraph_node.css('text-author').each do |node|
+      write_text_author(node)
+    end
+    @output_file.print('}')
+    @output_file.puts
+  end
+          
+  def write_text_author(text_author_node)
+    text_author_node.children.each do |node|
+      case node.name
+      when 'text'
+        @output_file.print(normalize_text(node.content))
+        @output_file.print('\\\\ ')
+      when 'emphasis'
+        write_emphasis(node)
+        @output_file.print('\\\\ ')
+      end
+    end
+  end
+
+  def write_close
+    @output_file.puts('\pagebreak')
+    @output_file.puts('\tableofcontents')
+    @output_file.puts('\end{document}')
+  end
+
+  def normalize_text(text)
+    text.gsub('%', '\%').gsub('&', '\&')
+  end
+
+  def image_name(name)
+    name.gsub('#', '')
+  end
+end
+
+input = ARGV[0]
+output = ARGV[1]
+if input.nil? || output.nil?
+  puts "Usage: #{$0} input.fb2 output.tex"
+  exit 1
+end
+puts "Converting #{input} to #{output}"
+Converter.new.convert(input, output)
+
